@@ -55,9 +55,25 @@ router.post("/login/", async (req, res) => {
 // POST /api/auth/register (for testing purposes)
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password, role, enrollmentNumber, year, semester } =
-      req.body;
-    if (!name || !email || !password || !role || !year || !semester)
+    const {
+      name,
+      email,
+      password,
+      role,
+      enrollmentNumber,
+      year,
+      semester,
+      department,
+    } = req.body;
+    if (
+      !name ||
+      !email ||
+      !password ||
+      !role ||
+      // !year ||
+      // !semester ||
+      !department
+    )
       return res
         .status(400)
         .json({ success: false, message: "Missing Fields." });
@@ -65,8 +81,13 @@ router.post("/register", async (req, res) => {
 
     let user;
     if (role === "teacher") {
-      user = await Teacher.create({ name, email, passwordHash });
+      user = await Teacher.create({ name, email, passwordHash, department });
     } else if (role === "student") {
+      if (!enrollmentNumber || !year || !semester) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Missing Fields." });
+      }
       user = await Student.create({
         name,
         email,
@@ -74,6 +95,7 @@ router.post("/register", async (req, res) => {
         enrollmentNumber,
         year,
         semester,
+        department,
       });
     } else {
       return res.status(400).json({ success: false, message: "Invalid Role." });

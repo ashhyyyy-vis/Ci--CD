@@ -1,10 +1,17 @@
 const express = require("express");
 const { auth } = require("../middleware/authMiddleware");
 const { Course, Session, Attendance } = require("../models");
+const { Op } = require("sequelize");
 const redis = require("../config/redis");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const router = express.Router();
+
+// Run cleanup before each session
+router.use(async (req, res, next) => {
+  await cleanupExpiredSessions();
+  next();
+});
 
 // GET teacher couses + server time
 router.get("/courses", auth(["teacher"]), async (req, res) => {
@@ -33,7 +40,7 @@ router.post("/start", auth(["teacher"]), async (req, res) => {
 
     // redis store cache for fast access
     await redis.set(
-      `activeSession_${session.id}`,
+      `activeSession:${session.id}`,
       JSON.stringify({ teacherId: req.user.id, courseId, startTime, endTime }),
       "EX",
       duration * 60 // expire after duration
@@ -153,5 +160,35 @@ router.post("/:sessionId/end", auth(["teacher"]), async (req, res) => {
     res.status(500).json({ success: false, message: "End session Error" });
   }
 });
+
+// Auto Cleanup of expired sessions
+async function cleanupExpiredSessions() {
+  try {
+    const now = new Date();
+    const expiredSessions = await Session.findAll({
+      where: {
+        active: true,
+        endTime: { [Op.lt]: now },
+      },
+    });
+    for (const session of expiredSessions) {
+      session.active = false;
+      await session.save();
+      const studentIds = await redis.smembers(`liveAttendance:${session.id}`);
+      for (const sid of studentIds) {
+        await Attendance.findorCreate({
+          where: { sessionId: session.id, studentId: sid },
+          defaults: { markedAt: new Date() },
+        });
+      }
+      // Clean Redis
+      await redis.del(`activeSession:${session.id}`);
+      await redis.del(`liveAttendance:${session.id}`);
+      //console.log(`Cleaned up expired session ${session.id}`);
+    }
+  } catch (error) {
+    console.error("Cleanup Error: ", error);
+  }
+}
 
 module.exports = router;

@@ -34,4 +34,7 @@ module.exports = {
   sequelize,
   Teacher,
   Student,
+  Course,
+  Session,
+  Attendance,
 };

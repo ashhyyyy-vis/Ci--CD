@@ -8,7 +8,7 @@ require("dotenv").config();
 const router = express.Router();
 
 // Time limits for scan validation
-const CLOCK_SKEW_MS = 5000;
+const CLOCK_SKEW_MS = 50000;
 const LATE_WINDOW_MS = 30000;
 const MAX_DELAY_MS = 120000;
 
@@ -17,12 +17,10 @@ router.post("/scan", auth(["student"]), async (req, res) => {
   try {
     const { qrToken, scannedAt } = req.body;
     if (!qrToken || !scannedAt)
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "qrToken and scannedAt are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "qrToken and scannedAt are required",
+      });
 
     const clientScannedAt = Number(scannedAt);
     if (Number.isNaN(clientScannedAt))
@@ -47,12 +45,10 @@ router.post("/scan", auth(["student"]), async (req, res) => {
     if (!activeSession) {
       const session = await Session.findByPk(sessionId);
       if (!session || !session.active) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Session is inactive or has expired",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Session is inactive or has expired",
+        });
       }
     }
 
@@ -75,19 +71,15 @@ router.post("/scan", auth(["student"]), async (req, res) => {
     const upperBound = tokenExpMs + LATE_WINDOW_MS;
 
     if (clientScannedAt < lowerBound || clientScannedAt > upperBound)
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "QR scan time is outside the valid window",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "QR scan time is outside the valid window",
+      });
     if (now - clientScannedAt > MAX_DELAY_MS)
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "QR scan submission delayed beyond acceptable limit",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "QR scan submission delayed beyond acceptable limit",
+      });
 
     // Mark attendance
     const studentId = req.user.id;
@@ -106,12 +98,10 @@ router.post("/scan", auth(["student"]), async (req, res) => {
     });
   } catch (error) {
     console.error("Scan Error: ", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Internal server error during scan processing",
-      });
+    res.status(500).json({
+      success: false,
+      message: "Internal server error during scan processing",
+    });
   }
 });
 
