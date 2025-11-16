@@ -1,7 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const { Teacher, Student } = require("../models");
+const { Teacher, Student, Class } = require("../models");
 const router = express.Router();
 
 // POST /api/auth/login
@@ -14,36 +14,71 @@ router.post("/login/", async (req, res) => {
         .json({ success: false, message: "Missing Credentials." });
 
     let user;
+
+    // according to the role match em
     if (role === "teacher") user = await Teacher.findOne({ where: { email } });
     else if (role === "student")
-      user = await Student.findOne({ where: { email } });
+      user = await Student.findOne({
+        where: { email },
+        include: [{ model: Class, as: "class" }],
+      });
     else
       return res.status(400).json({ success: false, message: "Invalid Role." });
+
     if (!user)
       return res
         .status(401)
         .json({ success: false, message: "User Not Found." });
 
+    // psswd validation
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match)
       return res
         .status(401)
         .json({ success: false, message: "Invalid Password." });
 
+    // token for that session
     const token = jwt.sign({ id: user.id, role }, process.env.JWT_SECRET, {
-      expiresIn: "2h",
+      expiresIn: "12h",
     });
+
+    const userData =
+      role === "teacher"
+        ? {
+            id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            facultyId: user.facultyId,
+            department: user.department,
+            role,
+          }
+        : {
+            id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            MIS: user.MIS,
+            year: user.year,
+            semester: user.semester,
+            department: user.department,
+            role,
+            class: user.class
+              ? {
+                  classId: user.class.id,
+                  name: user.class.name,
+                  code: user.class.code,
+                  description: user.class.description,
+                }
+              : null,
+          };
 
     res.json({
       success: true,
+      serverTime: Date.now(),
       data: {
         token,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role,
-        },
+        user: userData,
       },
     });
   } catch (error) {
@@ -56,59 +91,72 @@ router.post("/login/", async (req, res) => {
 router.post("/register", async (req, res) => {
   try {
     const {
-      name,
+      role,
+      firstName,
+      lastName,
       email,
       password,
-      role,
-      enrollmentNumber,
+      department,
+      MIS,
       year,
       semester,
-      department,
+      facultyId,
+      branch,
     } = req.body;
-    if (
-      !name ||
-      !email ||
-      !password ||
-      !role ||
-      // !year ||
-      // !semester ||
-      !department
-    )
+
+    if (!role || !firstName || !lastName || !email || !password || !department)
       return res
         .status(400)
-        .json({ success: false, message: "Missing Fields." });
+        .json({ success: false, message: "Missing fields." });
+
     const passwordHash = await bcrypt.hash(password, 10);
 
     let user;
+
     if (role === "teacher") {
-      user = await Teacher.create({ name, email, passwordHash, department });
-    } else if (role === "student") {
-      if (!enrollmentNumber || !year || !semester) {
+      if (!facultyId)
         return res
           .status(400)
-          .json({ success: false, message: "Missing Fields." });
-      }
-      user = await Student.create({
-        name,
+          .json({ success: false, message: "facultyId required." });
+
+      user = await Teacher.create({
+        firstName,
+        lastName,
         email,
+        facultyId,
+        department,
         passwordHash,
-        enrollmentNumber,
+      });
+    } else if (role === "student") {
+      if (!MIS || !year || !semester || !branch)
+        return res.status(400).json({
+          success: false,
+          message: "MIS, year, branch & semester are required for students.",
+        });
+
+      user = await Student.create({
+        firstName,
+        lastName,
+        email,
+        MIS,
         year,
         semester,
         department,
+        passwordHash,
+        branch,
       });
     } else {
-      return res.status(400).json({ success: false, message: "Invalid Role." });
+      return res.status(400).json({ success: false, message: "Invalid role." });
     }
 
-    res.json({
+    return res.json({
       success: true,
-      message: "User Registered Successfully.",
+      message: "User registered successfully.",
       id: user.id,
     });
   } catch (error) {
     console.error("Registration Error:", error);
-    res.status(500).json({ success: false, message: "Server Error." });
+    res.status(500).json({ success: false, message: "Server error." });
   }
 });
 

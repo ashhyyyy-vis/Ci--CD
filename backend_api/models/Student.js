@@ -54,6 +54,16 @@ const Student = sequelize.define(
       type: DataTypes.STRING,
       allowNull: false,
     },
+    classId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: "Classes",
+        key: "id",
+      },
+      onUpdate: "CASCADE",
+      onDelete: "SET NULL",
+    },
   },
   { timestamps: true }
 );

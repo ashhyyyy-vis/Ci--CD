@@ -1,6 +1,13 @@
 const express = require("express");
 const { auth } = require("../middleware/authMiddleware");
-const { Course, Session, Attendance } = require("../models");
+const {
+  Course,
+  Session,
+  Attendance,
+  SessionClass,
+  CourseStats,
+  Class,
+} = require("../models");
 const { Op } = require("sequelize");
 const redis = require("../config/redis");
 const jwt = require("jsonwebtoken");
@@ -13,24 +20,38 @@ router.use(async (req, res, next) => {
   next();
 });
 
-// GET teacher couses + server time
+// GET teacher courses and classes under that course
 router.get("/courses", auth(["teacher"]), async (req, res) => {
-  const courses = await Course.findAll({
-    where: { teacherId: req.user.id },
-  });
-  const serverTime = new Date();
-  res.json({ courses, serverTime });
+  try {
+    const courses = await Course.findAll({
+      where: { teacherId: req.user.id },
+      include: [
+        {
+          model: Class,
+          through: {
+            attributes: ["totalClasses"], // from CourseStats
+          },
+        },
+      ],
+    });
+
+    res.json({ success: true, courses });
+  } catch (err) {
+    console.error("Teacher Courses Error:", err);
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
 });
 
 // POST start a session
 router.post("/start", auth(["teacher"]), async (req, res) => {
   try {
-    const { courseId, duration = 3 } = req.body; //duration in minutes
+    const { courseId, classIds, duration = 3 } = req.body; //duration in minutes
 
     const startTime = new Date();
     const endTime = new Date(startTime.getTime() + duration * 60000);
 
     const session = await Session.create({
+      id: uuidv4(),
       courseId,
       teacherId: req.user.id,
       startTime,
@@ -38,10 +59,30 @@ router.post("/start", auth(["teacher"]), async (req, res) => {
       active: true,
     });
 
+    //store session -> class
+    for (const classId of classIds) {
+      await SessionClass.create({
+        id: uuidv4(),
+        sessionId: session.id,
+        classId,
+      });
+
+      //incrementing total for each class
+      await CourseStats.increment("totalClasses", {
+        where: { courseId, classId },
+      });
+    }
+
     // redis store cache for fast access
     await redis.set(
       `activeSession:${session.id}`,
-      JSON.stringify({ teacherId: req.user.id, courseId, startTime, endTime }),
+      JSON.stringify({
+        teacherId: req.user.id,
+        courseId,
+        classIds,
+        startTime,
+        endTime,
+      }),
       "EX",
       duration * 60 // expire after duration
     );
@@ -67,19 +108,19 @@ router.get("/:sessionId/qr", auth(["teacher"]), async (req, res) => {
 
     const nonce = uuidv4();
     const iat = Math.floor(Date.now() / 1000);
-    const exp = iat + 5;
-    const qrPayload = { sessionId, nonce, exp }; // QR valid for 5 seconds
+    const exp = iat + 500; // QR expiry 500 seconds
+    const qrPayload = { sessionId, nonce, iat, exp };
     const qrToken = jwt.sign(qrPayload, process.env.QR_JWT_SECRET);
 
     await redis.set(
       `qr:${nonce}`,
       JSON.stringify({ sessionId, iat, exp }),
       "EX",
-      65
-    ); // Store nonce with 5 seconds expiry
+      520 // 500 seconds + 20 extra seconds in redis
+    ); // Store nonce with 65 seconds expiry
 
     res.json({
-      succes: true,
+      success: true,
       qrToken,
       validFrom: iat * 1000,
       validTo: exp * 1000,
@@ -143,11 +184,10 @@ router.post("/:sessionId/end", auth(["teacher"]), async (req, res) => {
 
     const studentIds = await redis.smembers(`liveAttendance:${sessionId}`);
     for (const sid of studentIds) {
-      await Attendance,
-        findorCreate({
-          where: { sessionId, studentId: sid },
-          defaults: { markedAt: new Date() },
-        });
+      await Attendance.findOrCreate({
+        where: { sessionId, studentId: sid },
+        defaults: { markedAt: new Date() },
+      });
     }
     await redis.del(`activeSession:${sessionId}`);
     await redis.del(`liveAttendance:${sessionId}`);
@@ -176,7 +216,7 @@ async function cleanupExpiredSessions() {
       await session.save();
       const studentIds = await redis.smembers(`liveAttendance:${session.id}`);
       for (const sid of studentIds) {
-        await Attendance.findorCreate({
+        await Attendance.findOrCreate({
           where: { sessionId: session.id, studentId: sid },
           defaults: { markedAt: new Date() },
         });

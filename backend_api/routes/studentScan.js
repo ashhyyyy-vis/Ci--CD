@@ -2,15 +2,19 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const { auth } = require("../middleware/authMiddleware");
 const redis = require("../config/redis");
-const { Session, Attendance } = require("../models");
+const { Session, Attendance, Student, SessionClass } = require("../models");
 require("dotenv").config();
 
 const router = express.Router();
 
 // Time limits for scan validation
-const CLOCK_SKEW_MS = 50000;
-const LATE_WINDOW_MS = 30000;
-const MAX_DELAY_MS = 120000;
+const CLOCK_SKEW_MS = 500 * 1000; // 500 seconds for backward drift
+const LATE_WINDOW_MS = 500 * 1000; // 500 sec late scan allowance
+const MAX_DELAY_MS = 500 * 1000; // 500 sec network delay allowance
+
+// const CLOCK_SKEW_MS = 2000;   // allow 2 sec drift max
+// const LATE_WINDOW_MS = 2000;  // allow max 2 sec late scan
+// const MAX_DELAY_MS = 4000;    // allow 4 sec delay max
 
 // POST /api/student/scan
 router.post("/scan", auth(["student"]), async (req, res) => {
@@ -31,7 +35,7 @@ router.post("/scan", auth(["student"]), async (req, res) => {
     // Verify QR token
     let decoded;
     try {
-      decoded = jwt.verify(qrToken, process.env.QR_TOKEN_SECRET);
+      decoded = jwt.verify(qrToken, process.env.QR_JWT_SECRET);
     } catch (error) {
       return res
         .status(400)
@@ -80,6 +84,31 @@ router.post("/scan", auth(["student"]), async (req, res) => {
         success: false,
         message: "QR scan submission delayed beyond acceptable limit",
       });
+
+    // ---- CLASS VALIDATION ----
+    const student = await Student.findByPk(req.user.id);
+    if (!student || !student.classId) {
+      return res.status(400).json({
+        success: false,
+        message: "Student class information missing",
+      });
+    }
+
+    // Fetch all allowed classIds for this session
+    const allowedClasses = await SessionClass.findAll({
+      where: { sessionId },
+      attributes: ["classId"],
+    });
+
+    const allowedClassIds = allowedClasses.map((c) => c.classId);
+
+    // Check if student belongs to the allowed classes
+    if (!allowedClassIds.includes(student.classId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not part of the class for this session",
+      });
+    }
 
     // Mark attendance
     const studentId = req.user.id;
