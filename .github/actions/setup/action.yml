@@ -17,41 +17,33 @@ runs:
       id: config
       shell: bash
       run: |
-        CONFIG=$(jq -r --arg app "${{ inputs.app-dir }}" '.apps[$app]' ${{ inputs.config-path }})
+        CONFIG=$(jq -c --arg app "${{ inputs.app-dir }}" '.apps[$app]' ${{ inputs.config-path }})
         echo "config=$CONFIG" >> $GITHUB_OUTPUT
-        echo "type=$(echo $CONFIG | jq -r '.type')" >> $GITHUB_OUTPUT
-        echo "version=$(echo $CONFIG | jq -r '.version')" >> $GITHUB_OUTPUT
-        echo "install-command=$(echo $CONFIG | jq -r '.["install-command"]')" >> $GITHUB_OUTPUT
-        echo "test-command=$(echo $CONFIG | jq -r '.["test-command"]')" >> $GITHUB_OUTPUT
-        echo "build-command=$(echo $CONFIG | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
+        echo "type=$(echo "$CONFIG" | jq -r '.type')" >> $GITHUB_OUTPUT
+        echo "version=$(echo "$CONFIG" | jq -r '.version')" >> $GITHUB_OUTPUT
+        echo "install_command=$(echo "$CONFIG" | jq -r '.["install-command"]')" >> $GITHUB_OUTPUT
+        echo "test_command=$(echo "$CONFIG" | jq -r '.["test-command"]')" >> $GITHUB_OUTPUT
+        echo "build_command=$(echo "$CONFIG" | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
 
     - name: Setup Node.js
-      if: steps.config.outputs.type == 'node'
+      if: ${{ steps.config.outputs.type == 'node' }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ steps.config.outputs.version }}
         cache: 'npm'
 
-    # Add more stack types here as needed (e.g., python, java, etc.)
-    # - name: Setup Python
-    #   if: steps.config.outputs.type == 'python'
-    #   uses: actions/setup-python@v4
-    #   with:
-    #     python-version: ${{ steps.config.outputs.version }}
-    #     cache: 'pip'
-
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.app-dir }}
-      run: ${{ steps.config.outputs.install-command }}
+      run: ${{ steps.config.outputs.install_command }}
 
     - name: Run tests
       shell: bash
       working-directory: ${{ inputs.app-dir }}
-      run: ${{ steps.config.outputs.test-command }}
+      run: ${{ steps.config.outputs.test_command }}
       continue-on-error: false
 
     - name: Build application
       shell: bash
       working-directory: ${{ inputs.app-dir }}
-      run: ${{ steps.config.outputs.build-command }}
+      run: ${{ steps.config.outputs.build_command }}
