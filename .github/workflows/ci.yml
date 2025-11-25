@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        app-dir: ["backend_api", "teacher_app"]
+        app-dir: ["App/backend_api", "App/teacher_app"]
 
     steps:
       - name: Checkout code
