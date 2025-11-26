@@ -2,48 +2,104 @@ name: 'Setup Tech Stack'
 description: 'Sets up the required tech stack based on app configuration'
 
 inputs:
-  app-dir:
-    description: 'Directory of the application'
+  app-id:
+    description: 'Key of the app in config.json'
     required: true
   config-path:
-    description: 'Path to the config.json file'
+    description: 'Path to config.json'
     required: true
     default: './config.json'
+
+outputs:
+  directory:
+    description: 'The directory of the app from config'
+    value: ${{ steps.config.outputs.directory }}
+  type:
+    description: 'The type of the app from config'
+    value: ${{ steps.config.outputs.type }}
+  version:
+    description: 'The version from config'
+    value: ${{ steps.config.outputs.version }}
+  install-command:
+    description: 'The install command from config'
+    value: ${{ steps.config.outputs.install_command }}
+  test-command:
+    description: 'The test command from config'
+    value: ${{ steps.config.outputs.test_command }}
+  build-command:
+    description: 'The build command from config'
+    value: ${{ steps.config.outputs.build_command }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Read config
+    - name: Read app config
       id: config
       shell: bash
       run: |
-        CONFIG=$(jq -c --arg app "${{ inputs.app-dir }}" '.apps[$app]' ${{ inputs.config-path }})
+        CONFIG=$(jq -c --arg id "${{ inputs.app-id }}" '.apps[$id]' ${{ inputs.config-path }})
+
+        if [[ "$CONFIG" == "null" ]]; then
+          echo "❌ ERROR: App ID '${{ inputs.app-id }}' not found in config.json"
+          exit 1
+        fi
+
         echo "config=$CONFIG" >> $GITHUB_OUTPUT
+        echo "directory=$(echo "$CONFIG" | jq -r '.directory')" >> $GITHUB_OUTPUT
         echo "type=$(echo "$CONFIG" | jq -r '.type')" >> $GITHUB_OUTPUT
         echo "version=$(echo "$CONFIG" | jq -r '.version')" >> $GITHUB_OUTPUT
         echo "install_command=$(echo "$CONFIG" | jq -r '.["install-command"]')" >> $GITHUB_OUTPUT
         echo "test_command=$(echo "$CONFIG" | jq -r '.["test-command"]')" >> $GITHUB_OUTPUT
         echo "build_command=$(echo "$CONFIG" | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
-#Node dependency
+
+    # Setup Node
     - name: Setup Node.js
       if: ${{ steps.config.outputs.type == 'node' }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ steps.config.outputs.version }}
-        #cache: 'npm'
-#
+
+    # Setup Python
+    - name: Setup Python
+      if: ${{ steps.config.outputs.type == 'python' }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ steps.config.outputs.version }}
+
+    # Setup Flutter
+    - name: Setup Flutter
+      if: ${{ steps.config.outputs.type == 'flutter' }}
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ steps.config.outputs.version }}
+
+    # Setup Java
+    - name: Setup Java
+      if: ${{ steps.config.outputs.type == 'java' }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ steps.config.outputs.version }}
+        distribution: temurin
+
+    # Setup Go
+    - name: Setup Go
+      if: ${{ steps.config.outputs.type == 'go' }}
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ steps.config.outputs.version }}
+
+    # Shared Steps
     - name: Install dependencies
       shell: bash
-      working-directory: ${{ inputs.app-dir }}
+      working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.install_command }}
 
     - name: Run tests
       shell: bash
-      working-directory: ${{ inputs.app-dir }}
+      working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.test_command }}
-      continue-on-error: false
 
     - name: Build application
       shell: bash
-      working-directory: ${{ inputs.app-dir }}
+      working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.build_command }}
