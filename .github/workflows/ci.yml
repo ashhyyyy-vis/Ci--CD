@@ -83,11 +83,24 @@ jobs:
           ')
 
           # Targets are relative; convert to full paths
-          FULL=""
+          FULL=()
           for t in $TARGETS; do
-            FULL="$FULL ${{ steps.setup.outputs.directory }}/$t"
+            # Remove any leading/trailing whitespace and skip empty entries
+            t_trimmed=$(echo "$t" | xargs)
+            [ -z "$t_trimmed" ] && continue
+            
+            # Handle both relative and absolute paths
+            if [[ "$t_trimmed" == /* ]]; then
+              # Already an absolute path
+              FULL+=("$t_trimmed")
+            else
+              # Convert relative to absolute path
+              FULL+=("${{ steps.setup.outputs.directory }}/$t_trimmed")
+            fi
           done
 
+          # Join array elements with space
+          LINT_TARGETS="${FULL[*]}"
           echo "LINT_TARGETS=$FULL" >> $GITHUB_ENV
           echo "Computed LINT_TARGETS: $FULL"
 
