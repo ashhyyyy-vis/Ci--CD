@@ -1,15 +1,18 @@
 {
   "apps": {
-    "backend_api": {
+    "source_1": {
+      "directory": "App/backend_api",
       "type": "node",
-      "version": "16.x",
+      "version": "18",
       "install-command": "npm install",
       "test-command": "npm test",
       "build-command": "npm run build"
     },
-    "teacher_app": {
+
+    "source_2": {
+      "directory": "App/teacher_app",
       "type": "node",
-      "version": "22.x",
+      "version": "18",
       "install-command": "npm install",
       "test-command": "npm test",
       "build-command": "npm run build"
