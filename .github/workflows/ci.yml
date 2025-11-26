@@ -43,7 +43,7 @@ jobs:
 
       - name: Setup build environment for ${{ matrix.app-id }}
         id: setup
-        uses: ./.github/actions/setup
+        uses: ./.github/actions/setup@v2
         with:
           app-id: ${{ matrix.app-id }}
           config-path: ./config.json
