@@ -21,19 +21,35 @@ jobs:
         shell: bash
         run: |
           echo "🔍 Reading config.json..."
-          cat config.json || echo "❌ config.json not found!"
 
-          # Extract keys from both backend and frontend sections and combine them
-          BACKEND_APPS=$(jq -c '.apps.backend | keys' config.json || echo '[]')
-          FRONTEND_APPS=$(jq -c '.apps.frontend | keys' config.json || echo '[]')
-          
-          # Combine both arrays, make unique, and format as a single line JSON array
-          MATRIX=$(jq -n --argjson b "$BACKEND_APPS" --argjson f "$FRONTEND_APPS" '$b + $f | unique | tostring')
-          
-          # Remove all whitespace from the JSON string for GitHub Actions
-          MATRIX=${MATRIX//[[:space:]]/}
-          
-          echo "🔍 Extracted matrix: $MATRIX"
+          if [ ! -f config.json ]; then
+            echo "❌ config.json not found!"
+            exit 1
+          fi
+
+          cat config.json
+
+          ###############################################################
+          # READ BACKEND & FRONTEND KEYS (or empty arrays if missing)
+          ###############################################################
+          BACKEND_APPS=$(jq -c '.apps.backend | keys // []' config.json)
+          FRONTEND_APPS=$(jq -c '.apps.frontend | keys // []' config.json)
+
+          echo "🔧 Backend apps:   $BACKEND_APPS"
+          echo "🔧 Frontend apps:  $FRONTEND_APPS"
+
+          ###############################################################
+          # COMBINE → UNIQUE → OUTPUT CLEAN JSON
+          ###############################################################
+          MATRIX=$(jq -c -n \
+            --argjson b "$BACKEND_APPS" \
+            --argjson f "$FRONTEND_APPS" \
+            '$b + $f | unique'
+          )
+
+          echo "📦 Final matrix array: $MATRIX"
+
+          # Write raw JSON array to outputs (no quotes, no whitespace)
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
   build-and-test:
