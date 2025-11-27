@@ -27,11 +27,12 @@ jobs:
           echo "apps=$APPS" >> $GITHUB_OUTPUT
 
       - name: Extract app IDs
-        id: ids
+        id: app-ids
         run: |
-          RAW='${{ steps.read.outputs.apps }}'
-          IDS=$(echo "$RAW" | jq -r 'keys')
-          echo "ids=$IDS" >> $GITHUB_OUTPUT
+         RAW="${{ steps.read.outputs.apps }}"
+         IDS=$(printf '%s' "$RAW" | jq -c 'keys')
+         echo "ids=$IDS" >> $GITHUB_OUTPUT
+
 
   deploy:
     needs: prepare
