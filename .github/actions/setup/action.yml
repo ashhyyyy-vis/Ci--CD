@@ -1,123 +1,130 @@
-name: 'Setup Tech Stack'
-description: 'Sets up the required tech stack based on app configuration'
+name: "Setup Tech Stack"
+description: "Sets up the required tech stack based on app configuration"
 
 inputs:
   app-id:
-    description: 'Key of the app in config.json'
+    description: "Key of the app in config.json"
     required: true
   config-path:
-    description: 'Path to config.json'
+    description: "Path to config.json"
     required: true
-    default: './config.json'
+    default: ./config.json
 
 outputs:
-  directory:
-    description: 'The directory of the app'
-    value: ${{ steps.config.outputs.directory }}
-  type:
-    description: 'The type of the app'
-    value: ${{ steps.config.outputs.type }}
-  version:
-    description: 'The version'
-    value: ${{ steps.config.outputs.version }}
-  install-command:
-    description: 'Install command'
-    value: ${{ steps.config.outputs.install_command }}
-  test-command:
-    description: 'Test command'
-    value: ${{ steps.config.outputs.test_command }}
-  build-command:
-    description: 'Build command'
-    value: ${{ steps.config.outputs.build_command }}
-  lint:
-    description: 'Whether linting is enabled'
-    value: ${{ steps.config.outputs.lint }}
-  lint-path:
-    description: 'Optional linting subdirectory'
-    value: ${{ steps.config.outputs.lint_path }}
+  directory:        { value: ${{ steps.config.outputs.directory }} }
+  type:             { value: ${{ steps.config.outputs.type }} }
+  version:          { value: ${{ steps.config.outputs.version }} }
+  install-command:  { value: ${{ steps.config.outputs.install_command }} }
+  test-command:     { value: ${{ steps.config.outputs.test_command }} }
+  build-command:    { value: ${{ steps.config.outputs.build_command }} }
+  lint:             { value: ${{ steps.config.outputs.lint }} }
+  lint-path:        { value: ${{ steps.config.outputs.lint_path }} }
 
 runs:
-  using: 'composite'
+  using: composite
   steps:
+    #################################################################
+    #             READ CONFIG (Backend + Frontend Safe)            #
+    #################################################################
     - name: Read app config
       id: config
       shell: bash
       run: |
-        CONFIG=$(jq -c --arg id "${{ inputs.app-id }}" '.apps[$id]' ${{ inputs.config-path }})
+        CONFIG_PATH="${{ inputs.config-path }}"
+        APP_ID="${{ inputs.app-id }}"
 
-        if [[ "$CONFIG" == "null" ]]; then
-          echo "❌ ERROR: App ID '${{ inputs.app-id }}' not found in config.json"
+        if [ ! -f "$CONFIG_PATH" ]; then
+          echo "❌ config.json not found at $CONFIG_PATH"
           exit 1
         fi
 
-        echo "config=$CONFIG" >> $GITHUB_OUTPUT
-        echo "directory=$(echo "$CONFIG" | jq -r '.directory')" >> $GITHUB_OUTPUT
-        echo "type=$(echo "$CONFIG" | jq -r '.type')" >> $GITHUB_OUTPUT
-        echo "version=$(echo "$CONFIG" | jq -r '.version')" >> $GITHUB_OUTPUT
-        echo "install_command=$(echo "$CONFIG" | jq -r '.["install-command"]')" >> $GITHUB_OUTPUT
-        echo "test_command=$(echo "$CONFIG" | jq -r '.["test-command"]')" >> $GITHUB_OUTPUT
-        echo "build_command=$(echo "$CONFIG" | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
+        # Search backend first, then frontend
+        APP=$(jq -c \
+          --arg id "$APP_ID" \
+          '.apps.backend[$id] // .apps.frontend[$id] // null' \
+          "$CONFIG_PATH"
+        )
 
-        # NEW LINT FIELDS
-        echo "lint=$(echo "$CONFIG" | jq -r '.lint')" >> $GITHUB_OUTPUT
-        # Check if lint-path is an object or a string or null
-        LINT_PATH=$(echo "$CONFIG" | jq -c '."lint-path"')
-        echo "lint_path=$LINT_PATH" >> $GITHUB_OUTPUT
+        if [[ "$APP" == "null" ]]; then
+          echo "❌ ERROR: App ID '$APP_ID' not found in backend or frontend"
+          exit 1
+        fi
 
+        # Safe extract function: return empty string if missing
+        safe_get() {
+          echo "$APP" | jq -r --arg k "$1" '
+            if has($k) and .[$k] != null then .[$k] else "" end
+          '
+        }
 
-    # Setup Node
+        DIR=$(safe_get "directory")
+        TYPE=$(safe_get "type")
+        VERSION=$(safe_get "version")
+        INSTALL=$(safe_get "install-command")
+        TEST=$(safe_get "test-command")
+        BUILD=$(safe_get "build-command")
+        LINT=$(safe_get "lint")
+
+        # lint-path may be object, string, or null → raw JSON safe
+        LINT_PATH=$(echo "$APP" | jq -c '."lint-path" // ""')
+
+        echo "directory=$DIR"           >> $GITHUB_OUTPUT
+        echo "type=$TYPE"               >> $GITHUB_OUTPUT
+        echo "version=$VERSION"         >> $GITHUB_OUTPUT
+        echo "install_command=$INSTALL" >> $GITHUB_OUTPUT
+        echo "test_command=$TEST"       >> $GITHUB_OUTPUT
+        echo "build_command=$BUILD"     >> $GITHUB_OUTPUT
+        echo "lint=$LINT"               >> $GITHUB_OUTPUT
+        echo "lint_path=$LINT_PATH"     >> $GITHUB_OUTPUT
+
+    #################################################################
+    #                        LANGUAGE SETUP                         #
+    #################################################################
     - name: Setup Node.js
       if: ${{ steps.config.outputs.type == 'node' }}
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: ${{ steps.config.outputs.version }}
 
-    # Setup Python
     - name: Setup Python
       if: ${{ steps.config.outputs.type == 'python' }}
       uses: actions/setup-python@v4
       with:
         python-version: ${{ steps.config.outputs.version }}
 
-    # Setup Flutter
     - name: Setup Flutter
       if: ${{ steps.config.outputs.type == 'flutter' }}
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: ${{ steps.config.outputs.version }}
+        flutter-version: ${{ steps.config(outputs.version) }}
 
-    # Setup Java
     - name: Setup Java
       if: ${{ steps.config.outputs.type == 'java' }}
       uses: actions/setup-java@v4
       with:
-        java-version: ${{ steps.config.outputs.version }}
         distribution: temurin
+        java-version: ${{ steps.config.outputs.version }}
 
-    # Setup Go
     - name: Setup Go
       if: ${{ steps.config.outputs.type == 'go' }}
       uses: actions/setup-go@v4
       with:
         go-version: ${{ steps.config.outputs.version }}
 
-    # Install dependencies
+    #################################################################
+    #                   INSTALL / TEST / BUILD                      #
+    #################################################################
     - name: Install dependencies
       shell: bash
       working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.install_command }}
 
-    # Run tests
     - name: Run tests
       shell: bash
       working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.test_command }}
 
-    # Build application
     - name: Build application
       shell: bash
       working-directory: ${{ steps.config.outputs.directory }}
       run: ${{ steps.config.outputs.build_command }}
-
-    # Lint
- 
