@@ -24,7 +24,7 @@ jobs:
             echo "ERROR: deployment-config.json not found"
             exit 1
           fi
-          APPS=$(jq -c '.apps' deployment-config.json)
+          APPS=$(jq -c '.backend' deployment-config.json)
           echo "apps=$APPS" >> $GITHUB_OUTPUT
 
       - name: Extract app IDs

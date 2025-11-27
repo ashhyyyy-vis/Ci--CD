@@ -3,8 +3,7 @@ name: Deploy (Mock AWS)
 on:
   workflow_run:
     workflows: ["Stack-Agnostic CI"]
-    types:
-      - completed
+    types: [completed]
 
 jobs:
   prepare:
@@ -25,19 +24,20 @@ jobs:
             echo "ERROR: deployment-config.json not found"
             exit 1
           fi
-          APPS=$(jq -c '.apps' deployment-config.json)
+
+          # READ ONLY BACKEND
+          APPS=$(jq -c '.backend' deployment-config.json)
           echo "apps=$APPS" >> $GITHUB_OUTPUT
 
-      - name: Extract app IDs
+      - name: Extract backend app IDs
         id: app-ids
+        shell: bash
         run: |
           RAW='${{ steps.read.outputs.apps }}'
 
-          # base64 encode the RAW JSON
           RAW_B64=$(printf "%s" "$RAW" | base64 -w0)
           echo "apps_b64=$RAW_B64" >> $GITHUB_OUTPUT
 
-          # extract the keys as a JSON array: ["source_1","source_2"]
           IDS=$(echo "$RAW" | jq -c 'keys')
           echo "ids=$IDS" >> $GITHUB_OUTPUT
 
@@ -48,31 +48,26 @@ jobs:
       matrix:
         app-id: ${{ fromJson(needs.prepare.outputs.app-ids) }}
       fail-fast: false
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Parse app config
+      - name: Parse backend app config
         id: parse
         shell: bash
         run: |
           APP_KEY="${{ matrix.app-id }}"
-          APP_KEY=$(echo "$APP_KEY" | sed 's/^"//' | sed 's/"$//')
+          APP_KEY=$(echo "$APP_KEY" | sed 's/"//g')
 
-          # Decode base64 safely
           APPS_JSON=$(echo "${{ needs.prepare.outputs.apps-b64 }}" | base64 -d)
 
-          # Extract single app JSON
           APP_JSON=$(printf "%s" "$APPS_JSON" | jq -c --arg k "$APP_KEY" '.[$k]')
 
-          echo "=== Parsed App Config ==="
           echo "$APP_JSON" | jq '.'
-          echo "========================="
 
-          # Outputs
           echo "image_repo=$(echo "$APP_JSON" | jq -r '.image_repo')" >> $GITHUB_OUTPUT
           echo "launch_template_id=$(echo "$APP_JSON" | jq -r '.launch_template_id')" >> $GITHUB_OUTPUT
           echo "asg_name=$(echo "$APP_JSON" | jq -r '.asg_name')" >> $GITHUB_OUTPUT
@@ -86,23 +81,12 @@ jobs:
 
       - name: Mock AWS Credentials
         run: |
-          echo "=== MOCK: AWS Credentials ==="
-          echo "AWS Region: ${{ steps.parse.outputs.region }}"
-          echo "Role to assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'mock-arn:aws:iam::123456789012:role/mock-role' }}"
-          echo "============================"
+          echo "=== MOCK CREDS ==="
+          echo "Region: ${{ steps.parse.outputs.region }}"
 
       - name: Export deployment vars
         id: vars
         run: |
-          echo "=== MOCK: Deployment Variables ==="
-          echo "Image Tag: ${{ github.sha }}"
-          echo "Image Repo: ${{ steps.parse.outputs.image_repo }}"
-          echo "Launch Template ID: ${{ steps.parse.outputs.launch_template_id }}"
-          echo "ASG Name: ${{ steps.parse.outputs.asg_name }}"
-          echo "User Data Template: ${{ steps.parse.outputs.user_data_template }}"
-          echo "SSM Param: ${{ steps.parse.outputs.ssm_param_name }}"
-          echo "================================"
-          
           echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "image_repo=${{ steps.parse.outputs.image_repo }}" >> $GITHUB_OUTPUT
           echo "lt_id=${{ steps.parse.outputs.launch_template_id }}" >> $GITHUB_OUTPUT
@@ -115,53 +99,24 @@ jobs:
       - name: Mock SSM Update
         if: ${{ steps.vars.outputs.ud_template == 'ssm' }}
         run: |
-          echo "=== MOCK: Updating SSM Parameter ==="
-          echo "Parameter: ${{ steps.vars.outputs.ssm_param }}"
-          echo "Value: ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}"
-          echo "=================================="
+          echo "MOCK SSM update → ${{ steps.vars.outputs.ssm_param }}"
 
       - name: Mock Launch Template Update
         if: ${{ steps.vars.outputs.ud_template != 'ssm' }}
         id: newlt
         run: |
-          echo "=== MOCK: Creating New Launch Template Version ==="
-          echo "Launch Template ID: ${{ steps.vars.outputs.lt_id }}"
-          echo "Version Description: deploy-${{ github.sha }}"
-          echo "User Data: [base64-encoded user data would be here]"
-          echo "==============================================="
+          echo "Mock LT update"
           echo "new_version=42" >> $GITHUB_OUTPUT
 
       - name: Mock ASG Update
-        if: ${{ steps.vars.outputs.ud_template != 'ssm' }}
         run: |
-          echo "=== MOCK: Updating Auto Scaling Group ==="
-          echo "ASG Name: ${{ steps.vars.outputs.asg_name }}"
-          echo "Launch Template: ${{ steps.vars.outputs.lt_id }}"
-          echo "Version: ${{ steps.newlt.outputs.new_version || '42' }}"
-          echo "======================================="
+          echo "Mock ASG update"
 
       - name: Mock Instance Refresh
         id: refresh
         run: |
-          echo "=== MOCK: Starting Instance Refresh ==="
-          echo "ASG: ${{ steps.vars.outputs.asg_name }}"
-          echo "Min Healthy: ${{ steps.vars.outputs.minheal }}%"
-          echo "Warmup: ${{ steps.vars.outputs.warmup }} seconds"
-          echo "Refresh ID: ir-$(date +%s)"
-          echo "====================================="
-          echo "refresh_id=mock-refresh-123" >> $GITHUB_OUTPUT
+          echo "refresh_id=mock-123" >> $GITHUB_OUTPUT
 
       - name: Mock Refresh Status
         run: |
-          echo "=== MOCK: Refresh Status ==="
-          echo "Refresh ID: ${{ steps.refresh.outputs.refresh_id }}"
-          echo "Status: Successful"
-          echo "Progress: 100%"
-          echo "==========================="
-
-      - name: Mock Smoke Test
-        run: |
-          echo "=== MOCK: Smoke Test ==="
-          echo "Checking health at: http://localhost:${{ steps.parse.outputs.port }}${{ steps.parse.outputs.health_path }}"
-          echo "Status: 200 OK"
-          echo "======================="
+          echo "Mock refresh: Successful"
