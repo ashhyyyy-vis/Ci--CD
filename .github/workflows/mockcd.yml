@@ -26,10 +26,11 @@ jobs:
       - name: Extract app IDs
         id: app-ids
         run: |
-          APPS_JSON='${{ steps.read.outputs.apps }}'
-          APP_IDS=$(echo "$APPS_JSON" | jq -r 'keys | @csv' | tr -d '"')
-          echo "ids=[$APP_IDS]" >> $GITHUB_OUTPUT
-
+            APPS_JSON='${{ steps.read.outputs.apps }}'
+            # Convert the output to a proper JSON array
+            APP_IDS=$(echo "$APPS_JSON" | jq -r 'keys | tostring')
+            echo "ids=$APP_IDS" >> $GITHUB_OUTPUT
+            
   deploy:
     needs: prepare
     runs-on: ubuntu-latest
