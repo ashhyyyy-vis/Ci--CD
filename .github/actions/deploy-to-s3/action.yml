@@ -13,7 +13,7 @@ inputs:
 
   aws-config-path:
     required: true
-    default: ./deployment.config.json
+    default: ./deployment-config.json
 
   aws-access-key-id:
     required: true
