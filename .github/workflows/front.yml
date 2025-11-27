@@ -1,0 +1,19 @@
+name: Deploy All Frontends
+
+on:
+  workflow_run:
+    workflows: ["Stack-Agnostic CI"]
+    types:
+      - completed
+
+jobs:
+  deploy-teacher-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy teacher app
+        uses: ./.github/actions/deploy-to-s3
+        with:
+          app-type: frontend
+          app-id: source_2

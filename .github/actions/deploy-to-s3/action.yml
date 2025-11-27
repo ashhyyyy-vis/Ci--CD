@@ -1,0 +1,64 @@
+name: "Deploy Module to AWS S3"
+description: "Deploys a frontend module from config.json"
+
+inputs:
+  app-type:
+    description: "backend or frontend"
+    required: true
+
+  app-id:
+    description: "module key"
+    required: true
+
+  config-path:
+    description: "path to config.json"
+    required: true
+    default: "./config.json"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Read config
+      id: cfg
+      shell: bash
+      run: |
+        APP=$(jq -c --arg t "${{ inputs.app-type }}" --arg id "${{ inputs.app-id }}" '.[$t][$id]' ${{ inputs.config-path }})
+
+        if [[ "$APP" == "null" ]]; then
+          echo "❌ Module not found."
+          exit 1
+        fi
+
+        echo "directory=$(echo $APP | jq -r '.directory')" >> $GITHUB_OUTPUT
+        echo "deploy=$(echo $APP | jq -r '.deploy')" >> $GITHUB_OUTPUT
+        echo "bucket=$(echo $APP | jq -r '.["s3-bucket"]')" >> $GITHUB_OUTPUT
+        echo "region=$(echo $APP | jq -r '.["s3-region"]')" >> $GITHUB_OUTPUT
+        echo "build_command=$(echo $APP | jq -r '.["build-command"]')" >> $GITHUB_OUTPUT
+
+    - name: Skip deploy if disabled
+      if: ${{ steps.cfg.outputs.deploy != 'true' }}
+      shell: bash
+      run: echo "🚫 Deployment disabled for this module."
+
+    - name: Build frontend
+      if: ${{ steps.cfg.outputs.deploy == 'true' }}
+      shell: bash
+      working-directory: ${{ steps.cfg.outputs.directory }}
+      run: ${{ steps.cfg.outputs.build_command }}
+
+    - name: Configure AWS
+      if: ${{ steps.cfg.outputs.deploy == 'true' }}
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ steps.cfg.outputs.region }}
+
+    - name: Deploy to S3
+      if: ${{ steps.cfg.outputs.deploy == 'true' }}
+      shell: bash
+      run: |
+        aws s3 sync \
+          ${{ steps.cfg.outputs.directory }}/build \
+          s3://${{ steps.cfg.outputs.bucket }} \
+          --delete

@@ -23,8 +23,12 @@ jobs:
           echo "🔍 Reading config.json..."
           cat config.json || echo "❌ config.json not found!"
 
-          # Extract keys under .apps (["source_1","source_2",...])
-          MATRIX=$(jq -c '.apps | keys' config.json)
+          # Extract keys from both backend and frontend sections and combine them
+          BACKEND_APPS=$(jq -c '.apps.backend | keys' config.json || echo '[]')
+          FRONTEND_APPS=$(jq -c '.apps.frontend | keys' config.json || echo '[]')
+          
+          # Combine both arrays and make unique
+          MATRIX=$(jq -n --argjson b "$BACKEND_APPS" --argjson f "$FRONTEND_APPS" '$b + $f | unique')
 
           echo "🔍 Extracted matrix: $MATRIX"
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT

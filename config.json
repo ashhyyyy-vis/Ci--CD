@@ -1,35 +1,38 @@
 {
-  "apps": {
-    "source_1": {
-      "directory": "App/backend_api",
-      "type": "node",
-      "version": "18",
-      "lint": true,
-      "lint-path": {
-        "s1": "config",
-        "s2": "middleware",
-        "s3": "models",
-        "s4": "routes",
-        "s5": "server.js"
-      },
-      "install-command": "npm install",
-      "test-command": "npm test",
-      "build-command": "npm run build"
+    "apps": {
+      "backend": {
+      "source_1": {
+        "directory": "App/backend_api",
+        "type": "node",
+        "version": "18",
+        "lint": true,
+        "lint-path": {
+          "s1": "config",
+          "s2": "middleware",
+          "s3": "models",
+          "s4": "routes",
+          "s5": "server.js"
+        },
+        "install-command": "npm install",
+        "test-command": "npm test",
+        "build-command": "npm run build"
+      }
     },
-
-    "source_2": {
-      "directory": "App/teacher_app",
-      "type": "node",
-      "version": "20.19",
-      "lint": true,
-      "lint-path": {
-        "s1": "public",
-        "s2": "src",
-        "s3": "index.html"
-      },
-      "install-command": "npm install",
-      "test-command": "npm test",
-      "build-command": "npm run build"
+    "frontend":{
+      "source_2": {
+        "directory": "App/teacher_app",
+        "type": "node",
+        "version": "20.19",
+        "lint": true,
+        "lint-path": {
+          "s1": "public",
+          "s2": "src",
+          "s3": "index.html"
+        },
+        "install-command": "npm install",
+        "test-command": "npm test",
+        "build-command": "npm run build"
+      }
     }
   }
 }
