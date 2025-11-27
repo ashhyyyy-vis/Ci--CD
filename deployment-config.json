@@ -12,7 +12,7 @@
       "instance_warmup": 30,
       "min_healthy_percent": 90,
 
-      "user_data_template": "userdata",
+      "user_data_template": "ssm",
       "ssm_param_name": "ssm-backend-image"
     },
 
