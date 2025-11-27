@@ -1,0 +1,184 @@
+name: Deploy (Platform)
+
+on:
+  workflow_run:
+    workflows: ["Stack-Agnostic CI"]
+    types:
+      - completed
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      apps-json: ${{ steps.read.outputs.apps }}
+      app-ids: ${{ steps.app-ids.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read deployment-config.json
+        id: read
+        shell: bash
+        run: |
+          if [ ! -f deployment-config.json ]; then
+            echo "ERROR: deployment-config.json not found"
+            exit 1
+          fi
+          APPS=$(jq -c '.apps' deployment-config.json)
+          echo "apps=$APPS" >> $GITHUB_OUTPUT
+
+      - name: Extract app IDs
+        id: app-ids
+        run: |
+          # Get the keys from the apps JSON and format as a JSON array
+          APPS_JSON='${{ steps.read.outputs.apps }}'
+          APP_IDS=$(echo "$APPS_JSON" | jq -r 'keys | @csv' | tr -d '"')
+          echo "ids=[$APP_IDS]" >> $GITHUB_OUTPUT
+  deploy:
+    needs: prepare
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        app-id: ${{ fromJson(needs.prepare.outputs.app-ids) }}
+      fail-fast: false
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Parse app config
+        id: parse
+        shell: bash
+        run: |
+          APP_KEY="${{ matrix.app-id }}"
+          APP_KEY=$(echo "$APP_KEY" | sed 's/^"//' | sed 's/"$//')
+
+          APP_JSON=$(jq -c --arg k "$APP_KEY" '.[$k]' <<< "${{ needs.prepare.outputs.apps-json }}")
+          echo "Using app key: $APP_KEY"
+
+          echo "image_repo=$(echo "$APP_JSON" | jq -r '.image_repo')" >> $GITHUB_OUTPUT
+          echo "launch_template_id=$(echo "$APP_JSON" | jq -r '.launch_template_id')" >> $GITHUB_OUTPUT
+          echo "asg_name=$(echo "$APP_JSON" | jq -r '.asg_name')" >> $GITHUB_OUTPUT
+          echo "region=$(echo "$APP_JSON" | jq -r '.region')" >> $GITHUB_OUTPUT
+          echo "port=$(echo "$APP_JSON" | jq -r '.port')" >> $GITHUB_OUTPUT
+          echo "health_path=$(echo "$APP_JSON" | jq -r '.health_path')" >> $GITHUB_OUTPUT
+          echo "instance_warmup=$(echo "$APP_JSON" | jq -r '.instance_warmup')" >> $GITHUB_OUTPUT
+          echo "min_healthy_percent=$(echo "$APP_JSON" | jq -r '.min_healthy_percent')" >> $GITHUB_OUTPUT
+          echo "user_data_template=$(echo "$APP_JSON" | jq -r '.user_data_template')" >> $GITHUB_OUTPUT
+          echo "ssm_param_name=$(echo "$APP_JSON" | jq -r '.ssm_param_name')" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-region: ${{ steps.parse.outputs.region }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-session-name: gha-deploy
+
+      - name: Export deployment vars
+        id: vars
+        run: |
+          echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "image_repo=${{ steps.parse.outputs.image_repo }}" >> $GITHUB_OUTPUT
+          echo "lt_id=${{ steps.parse.outputs.launch_template_id }}" >> $GITHUB_OUTPUT
+          echo "asg_name=${{ steps.parse.outputs.asg_name }}" >> $GITHUB_OUTPUT
+          echo "ud_template=${{ steps.parse.outputs.user_data_template }}" >> $GITHUB_OUTPUT
+          echo "ssm_param=${{ steps.parse.outputs.ssm_param_name }}" >> $GITHUB_OUTPUT
+          echo "warmup=${{ steps.parse.outputs.instance_warmup }}" >> $GITHUB_OUTPUT
+          echo "minheal=${{ steps.parse.outputs.min_healthy_percent }}" >> $GITHUB_OUTPUT
+
+      - name: Write image tag to SSM (SSM mode)
+        if: ${{ steps.vars.outputs.ud_template == 'ssm' }}
+        run: |
+          aws ssm put-parameter \
+            --name "${{ steps.vars.outputs.ssm_param }}" \
+            --value "${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}" \
+            --type String \
+            --overwrite
+
+      - name: Create new Launch Template version (UserData mode)
+        if: ${{ steps.vars.outputs.ud_template != 'ssm' }}
+        id: newlt
+        run: |
+          IMAGE_REPO="${{ steps.vars.outputs.image_repo }}"
+          IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
+          PORT="${{ steps.parse.outputs.port }}"
+
+          echo "Generating user-data script..."
+          echo "#!/bin/bash" > user-data.sh
+          echo "set -e" >> user-data.sh
+          echo "IMAGE_FULL=\"$IMAGE_REPO:$IMAGE_TAG\"" >> user-data.sh
+          echo "docker pull \$IMAGE_FULL || true" >> user-data.sh
+          echo "docker stop myapp || true" >> user-data.sh
+          echo "docker rm myapp || true" >> user-data.sh
+          echo "docker run -d --name myapp --restart always -p $PORT:$PORT \$IMAGE_FULL" >> user-data.sh
+
+          USERDATA_B64=$(base64 -w 0 user-data.sh)
+
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-id "${{ steps.vars.outputs.lt_id }}" \
+            --launch-template-data "{\"UserData\":\"$USERDATA_B64\"}" \
+            --version-description "deploy-$IMAGE_TAG" \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update Auto Scaling Group (if LT updated)
+        run: |
+          if [ "${{ steps.vars.outputs.ud_template }}" = "ssm" ]; then
+            echo "SSM mode, skipping LT update."
+            exit 0
+          fi
+
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name "${{ steps.vars.outputs.asg_name }}" \
+            --launch-template "LaunchTemplateId=${{ steps.vars.outputs.lt_id }},Version=${{ steps.newlt.outputs.new_version }}"
+
+      - name: Start instance refresh
+        id: refresh
+        run: |
+          ASG="${{ steps.vars.outputs.asg_name }}"
+
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG" \
+            --strategy Rolling \
+            --preferences "{\"MinHealthyPercentage\":${{ steps.vars.outputs.minheal }},\"InstanceWarmup\":${{ steps.vars.outputs.warmup }}}" \
+            --query 'InstanceRefreshId' \
+            --output text)
+
+          echo "refresh_id=$REFRESH_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for refresh to complete
+        run: |
+          ASG="${{ steps.vars.outputs.asg_name }}"
+          REF="${{ steps.refresh.outputs.refresh_id }}"
+
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG" \
+              --instance-refresh-ids "$REF" \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+
+            echo "Status: $STATUS"
+
+            if [[ "$STATUS" == "Successful" ]]; then
+              echo "Deployment completed successfully."
+              break
+            fi
+
+            if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              echo "Deployment failed."
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+      - name: Smoke test
+        run: |
+          echo "Smoke test placeholder — integrate with ALB health check."
+          exit 0
