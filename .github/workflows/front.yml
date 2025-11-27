@@ -10,6 +10,7 @@ jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Deploy Frontend
         uses: ./.github/actions/deploy-to-s3
         with:
