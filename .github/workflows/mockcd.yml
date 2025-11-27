@@ -1,69 +1,60 @@
-name: Deploy (Local Simulation)
+name: Deploy (Mock AWS)
 
 on:
-  workflow_run:
-    workflows: ["Stack-Agnostic CI"]
-    types:
-      - completed
+  workflow_dispatch:
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
       apps-json: ${{ steps.read.outputs.apps }}
-      app-ids: ${{ steps.app-ids.outputs.ids }}  # Fixed: Changed from steps.ids to steps.app-ids
+      app-ids: ${{ steps.app-ids.outputs.ids }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Read deployment-config.json
         id: read
+        shell: bash
         run: |
           if [ ! -f deployment-config.json ]; then
-            echo "❌ deployment-config.json not found"
+            echo "ERROR: deployment-config.json not found"
             exit 1
           fi
-
           APPS=$(jq -c '.apps' deployment-config.json)
           echo "apps=$APPS" >> $GITHUB_OUTPUT
 
       - name: Extract app IDs
-        id: app-ids  # This needs to match the ID used in outputs
-        run: |  # Fixed indentation
-          RAW=$(cat << 'EOF'
-${{ steps.read.outputs.apps }}
-EOF
-)
-          IDS=$(printf '%s' "$RAW" | jq -c 'keys')
-          echo "ids=$IDS" >> $GITHUB_OUTPUT
+        id: app-ids
+        run: |
+          APPS_JSON='${{ steps.read.outputs.apps }}'
+          APP_IDS=$(echo "$APPS_JSON" | jq -r 'keys | @csv' | tr -d '"')
+          echo "ids=[$APP_IDS]" >> $GITHUB_OUTPUT
 
   deploy:
     needs: prepare
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    # ... rest of the file remains the same ...
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-
     strategy:
       matrix:
         app-id: ${{ fromJson(needs.prepare.outputs.app-ids) }}
       fail-fast: false
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Parse config for this app
+      - name: Parse app config
         id: parse
+        shell: bash
         run: |
           APP_KEY="${{ matrix.app-id }}"
-          APPS_JSON='${{ needs.prepare.outputs.apps-json }}'
-          APP_JSON=$(echo "$APPS_JSON" | jq -c --arg k "$APP_KEY" '.[$k]')
-
-          echo "Selected app: $APP_KEY"
-          echo "Config: $APP_JSON"
+          APP_KEY=$(echo "$APP_KEY" | sed 's/^"//' | sed 's/"$//')
+          APP_JSON=$(jq -c --arg k "$APP_KEY" '.[$k]' <<< "${{ needs.prepare.outputs.apps-json }}")
+          
+          echo "=== MOCK: Parsed App Config ==="
+          echo "$APP_JSON" | jq '.'
+          echo "=============================="
 
           echo "image_repo=$(echo "$APP_JSON" | jq -r '.image_repo')" >> $GITHUB_OUTPUT
           echo "launch_template_id=$(echo "$APP_JSON" | jq -r '.launch_template_id')" >> $GITHUB_OUTPUT
@@ -71,82 +62,89 @@ EOF
           echo "region=$(echo "$APP_JSON" | jq -r '.region')" >> $GITHUB_OUTPUT
           echo "port=$(echo "$APP_JSON" | jq -r '.port')" >> $GITHUB_OUTPUT
           echo "health_path=$(echo "$APP_JSON" | jq -r '.health_path')" >> $GITHUB_OUTPUT
-          echo "warmup=$(echo "$APP_JSON" | jq -r '.instance_warmup')" >> $GITHUB_OUTPUT
-          echo "minheal=$(echo "$APP_JSON" | jq -r '.min_healthy_percent')" >> $GITHUB_OUTPUT
-          echo "ud_template=$(echo "$APP_JSON" | jq -r '.user_data_template')" >> $GITHUB_OUTPUT
-          echo "ssm_param=$(echo "$APP_JSON" | jq -r '.ssm_param_name')" >> $GITHUB_OUTPUT
+          echo "instance_warmup=$(echo "$APP_JSON" | jq -r '.instance_warmup')" >> $GITHUB_OUTPUT
+          echo "min_healthy_percent=$(echo "$APP_JSON" | jq -r '.min_healthy_percent')" >> $GITHUB_OUTPUT
+          echo "user_data_template=$(echo "$APP_JSON" | jq -r '.user_data_template')" >> $GITHUB_OUTPUT
+          echo "ssm_param_name=$(echo "$APP_JSON" | jq -r '.ssm_param_name')" >> $GITHUB_OUTPUT
 
-      - name: Simulate AWS credential setup
+      - name: Mock AWS Credentials
         run: |
-          echo "🔧 Local Mode: Skipping AWS credential setup."
-          echo "(Would assume role: ${{ secrets.AWS_ROLE_TO_ASSUME }})"
+          echo "=== MOCK: AWS Credentials ==="
+          echo "AWS Region: ${{ steps.parse.outputs.region }}"
+          echo "Role to assume: ${{ secrets.AWS_ROLE_TO_ASSUME || 'mock-arn:aws:iam::123456789012:role/mock-role' }}"
+          echo "============================"
 
-      - name: Compute runtime vars
+      - name: Export deployment vars
         id: vars
         run: |
+          echo "=== MOCK: Deployment Variables ==="
+          echo "Image Tag: ${{ github.sha }}"
+          echo "Image Repo: ${{ steps.parse.outputs.image_repo }}"
+          echo "Launch Template ID: ${{ steps.parse.outputs.launch_template_id }}"
+          echo "ASG Name: ${{ steps.parse.outputs.asg_name }}"
+          echo "User Data Template: ${{ steps.parse.outputs.user_data_template }}"
+          echo "SSM Param: ${{ steps.parse.outputs.ssm_param_name }}"
+          echo "================================"
+          
           echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
           echo "image_repo=${{ steps.parse.outputs.image_repo }}" >> $GITHUB_OUTPUT
+          echo "lt_id=${{ steps.parse.outputs.launch_template_id }}" >> $GITHUB_OUTPUT
+          echo "asg_name=${{ steps.parse.outputs.asg_name }}" >> $GITHUB_OUTPUT
+          echo "ud_template=${{ steps.parse.outputs.user_data_template }}" >> $GITHUB_OUTPUT
+          echo "ssm_param=${{ steps.parse.outputs.ssm_param_name }}" >> $GITHUB_OUTPUT
+          echo "warmup=${{ steps.parse.outputs.instance_warmup }}" >> $GITHUB_OUTPUT
+          echo "minheal=${{ steps.parse.outputs.min_healthy_percent }}" >> $GITHUB_OUTPUT
 
-      - name: Simulate SSM write
-        if: ${{ steps.parse.outputs.ud_template == 'ssm' }}
+      - name: Mock SSM Update
+        if: ${{ steps.vars.outputs.ud_template == 'ssm' }}
         run: |
-          echo "📦 Local Mode: Would write to SSM:"
-          echo "SSM Param = '${{ steps.parse.outputs.ssm_param }}'"
-          echo "Value = '${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}'"
+          echo "=== MOCK: Updating SSM Parameter ==="
+          echo "Parameter: ${{ steps.vars.outputs.ssm_param }}"
+          echo "Value: ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}"
+          echo "=================================="
 
-      - name: Generate user-data script
-        if: ${{ steps.parse.outputs.ud_template != 'ssm' }}
-        id: userdata
+      - name: Mock Launch Template Update
+        if: ${{ steps.vars.outputs.ud_template != 'ssm' }}
+        id: newlt
         run: |
-          IMAGE="${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}"
-          PORT=${{ steps.parse.outputs.port }}
+          echo "=== MOCK: Creating New Launch Template Version ==="
+          echo "Launch Template ID: ${{ steps.vars.outputs.lt_id }}"
+          echo "Version Description: deploy-${{ github.sha }}"
+          echo "User Data: [base64-encoded user data would be here]"
+          echo "==============================================="
+          echo "new_version=42" >> $GITHUB_OUTPUT
 
-          echo "🔧 Creating user-data.sh (local mode)..."
-          {
-            echo "#!/bin/bash"
-            echo "set -e"
-            echo "IMAGE_FULL=\"$IMAGE\""
-            echo "docker pull \$IMAGE_FULL || true"
-            echo "docker stop myapp || true"
-            echo "docker rm myapp || true"
-            echo "docker run -d --name myapp --restart always -p $PORT:$PORT \$IMAGE_FULL"
-          } > user-data.sh
-
-          echo "Generated user-data.sh:"
-          cat user-data.sh
-
-          USERDATA_B64=$(base64 -w 0 user-data.sh)
-          echo "userdata_b64=$USERDATA_B64" >> $GITHUB_OUTPUT
-
-      - name: Simulate Launch Template Update
-        if: ${{ steps.parse.outputs.ud_template != 'ssm' }}
+      - name: Mock ASG Update
+        if: ${{ steps.vars.outputs.ud_template != 'ssm' }}
         run: |
-          echo "🚀 Local Mode: Would create new LT version:"
-          echo "Launch Template ID: ${{ steps.parse.outputs.launch_template_id }}"
-          echo "UserData (base64):"
-          echo "${{ steps.userdata.outputs.userdata_b64 }}"
-          echo "Simulated LT version = 42 (always)"
+          echo "=== MOCK: Updating Auto Scaling Group ==="
+          echo "ASG Name: ${{ steps.vars.outputs.asg_name }}"
+          echo "Launch Template: ${{ steps.vars.outputs.lt_id }}"
+          echo "Version: ${{ steps.newlt.outputs.new_version || '42' }}"
+          echo "======================================="
 
-      - name: Simulate ASG Update
+      - name: Mock Instance Refresh
+        id: refresh
         run: |
-          echo "🚀 Local Mode: Would update ASG:"
-          echo "ASG Name: ${{ steps.parse.outputs.asg_name }}"
-          echo "New Launch Template Version: 42"
+          echo "=== MOCK: Starting Instance Refresh ==="
+          echo "ASG: ${{ steps.vars.outputs.asg_name }}"
+          echo "Min Healthy: ${{ steps.vars.outputs.minheal }}%"
+          echo "Warmup: ${{ steps.vars.outputs.warmup }} seconds"
+          echo "Refresh ID: ir-$(date +%s)"
+          echo "====================================="
+          echo "refresh_id=mock-refresh-123" >> $GITHUB_OUTPUT
 
-      - name: Simulate Instance Refresh
+      - name: Mock Refresh Status
         run: |
-          echo "🔄 Local Mode: Would start instance refresh:"
-          echo "MinHealthy = ${{ steps.parse.outputs.minheal }}"
-          echo "Warmup = ${{ steps.parse.outputs.warmup }}"
-          echo "Simulated Refresh ID = refresh-123"
+          echo "=== MOCK: Refresh Status ==="
+          echo "Refresh ID: ${{ steps.refresh.outputs.refresh_id }}"
+          echo "Status: Successful"
+          echo "Progress: 100%"
+          echo "==========================="
 
-      - name: Simulate Waiting for Refresh
+      - name: Mock Smoke Test
         run: |
-          echo "⏳ Local Mode: Simulating wait..."
-          sleep 2
-          echo "Refresh successful!"
-
-      - name: Simulated Smoke Test
-        run: |
-          echo "🧪 Local Mode: Smoke test always passes."
-          exit 0
+          echo "=== MOCK: Smoke Test ==="
+          echo "Checking health at: http://localhost:${{ steps.parse.outputs.port }}${{ steps.parse.outputs.health_path }}"
+          echo "Status: 200 OK"
+          echo "======================="
