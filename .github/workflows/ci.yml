@@ -1,5 +1,6 @@
 name: Stack-Agnostic CI
 #🏳️‍⚧️
+
 on:
   push:
     branches: ["main"]
@@ -7,51 +8,61 @@ on:
     branches: ["main"]
 
 jobs:
+  ######################################################################
+  #                       PREPARE MATRIX                              #
+  ######################################################################
   prepare-matrix:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.read-config.outputs.matrix }}
+      matrix: ${{ steps.read.outputs.matrix }}
+      app_types: ${{ steps.read.outputs.types }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - id: read-config
+      - id: read
         name: Read config.json and extract app IDs
         shell: bash
         run: |
           echo "🔍 Reading config.json..."
 
           if [ ! -f config.json ]; then
-            echo "❌ config.json not found!"
+            echo "❌ config.json missing!"
             exit 1
           fi
 
-          cat config.json
+          # Read keys for backend & frontend
+          BACKEND=$(jq -c '.apps.backend | keys // []' config.json)
+          FRONTEND=$(jq -c '.apps.frontend | keys // []' config.json)
 
-          ###############################################################
-          # READ BACKEND & FRONTEND KEYS (or empty arrays if missing)
-          ###############################################################
-          BACKEND_APPS=$(jq -c '.apps.backend | keys // []' config.json)
-          FRONTEND_APPS=$(jq -c '.apps.frontend | keys // []' config.json)
+          echo "Backend modules:  $BACKEND"
+          echo "Frontend modules: $FRONTEND"
 
-          echo "🔧 Backend apps:   $BACKEND_APPS"
-          echo "🔧 Frontend apps:  $FRONTEND_APPS"
-
-          ###############################################################
-          # COMBINE → UNIQUE → OUTPUT CLEAN JSON
-          ###############################################################
+          # Combine into single array
           MATRIX=$(jq -c -n \
-            --argjson b "$BACKEND_APPS" \
-            --argjson f "$FRONTEND_APPS" \
+            --argjson b "$BACKEND" \
+            --argjson f "$FRONTEND" \
             '$b + $f | unique'
           )
 
-          echo "📦 Final matrix array: $MATRIX"
-
-          # Write raw JSON array to outputs (no quotes, no whitespace)
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
+          # Also keep a parallel array showing type (backend/frontend)
+          TYPES=$(jq -c -n \
+            --argjson b "$BACKEND" \
+            --argjson f "$FRONTEND" \
+            '
+              ($b | map({"id": ., "type": "backend"})) +
+              ($f | map({"id": ., "type": "frontend"}))
+            '
+          )
+
+          echo "types=$TYPES" >> $GITHUB_OUTPUT
+
+
+  ######################################################################
+  #                      BUILD + TEST JOBS                            #
+  ######################################################################
   build-and-test:
     needs: prepare-matrix
     runs-on: ubuntu-latest
@@ -61,9 +72,30 @@ jobs:
         app-id: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
+      ##################################################################
+      #     FETCH TYPE (backend/frontend) for CURRENT MATRIX ITEM      #
+      ##################################################################
+      - id: get-type
+        name: Identify app type
+        shell: bash
+        run: |
+          TYPES='${{ needs.prepare-matrix.outputs.app_types }}'
+          APP='${{ matrix.app-id }}'
+
+          TYPE=$(echo "$TYPES" | jq -r --arg id "$APP" '.[] | select(.id == $id) | .type')
+
+          if [ -z "$TYPE" ]; then
+            echo "❌ Could not determine type for $APP"
+            exit 1
+          fi
+
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+
+      ##################################################################
+      #                RUN SETUP (NODE/PYTHON/JAVA/etc)               #
+      ##################################################################
       - name: Setup build environment for ${{ matrix.app-id }}
         id: setup
         uses: ./.github/actions/setup
@@ -71,10 +103,9 @@ jobs:
           app-id: ${{ matrix.app-id }}
           config-path: ./config.json
 
-      ######################################################################
-      #                         DYNAMIC LINTING                            #
-      ######################################################################
-
+      ##################################################################
+      #                         LINT                                    #
+      ##################################################################
       - name: Prepare lint paths
         id: lintprep
         shell: bash
@@ -89,92 +120,53 @@ jobs:
 
           LINT_PATH_JSON='${{ steps.setup.outputs.lint_path }}'
 
-          # Case 1: null → lint entire directory
           if [ "$LINT_PATH_JSON" = "null" ]; then
             echo "LINT_TARGETS=${{ steps.setup.outputs.directory }}" >> $GITHUB_ENV
             exit 0
           fi
 
-          # Case 2: string → convert to list
-          # Case 3: object → convert values to list
           TARGETS=$(echo "$LINT_PATH_JSON" | jq -r '
-            if type=="string" then
-              [.]          # convert single string to array
-            else
-              [.[]]        # get all values from object
-            end | join(" ")
+            if type=="string" then [.] else [.[]] end | join(" ")
           ')
 
-          # Targets are relative; convert to full paths
           FULL=()
           for t in $TARGETS; do
-            # Remove any leading/trailing whitespace and skip empty entries
-            t_trimmed=$(echo "$t" | xargs)
-            [ -z "$t_trimmed" ] && continue
-            
-            # Handle both relative and absolute paths
-            if [[ "$t_trimmed" == /* ]]; then
-              # Already an absolute path
-              FULL+=("$t_trimmed")
-            else
-              # Convert relative to absolute path
-              FULL+=("${{ steps.setup.outputs.directory }}/$t_trimmed")
-            fi
+            t_trim=$(echo "$t" | xargs)
+            [ -z "$t_trim" ] && continue
+            FULL+=("${{ steps.setup.outputs.directory }}/$t_trim")
           done
 
-          # Join array elements with space
-          LINT_TARGETS="${FULL[*]}"
-          echo "LINT_TARGETS=$FULL" >> $GITHUB_ENV
-          echo "Computed LINT_TARGETS: $FULL"
+          echo "LINT_TARGETS=${FULL[*]}" >> $GITHUB_ENV
+          echo "Computed LINT_TARGETS: ${FULL[*]}"
 
       - name: Run Super-Linter
         if: env.LINT_TARGETS != ''
         uses: super-linter/super-linter@v6
         env:
           DEFAULT_BRANCH: "main"
-          # We lint ONLY the computed paths
           FILTER_REGEX_INCLUDE: ${{ env.LINT_TARGETS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      ######################################################################
-      #                         DOCKER BUILD                               #
-      ######################################################################
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Build & Push Image
-        if: github.event_name != 'pull_request'
+      ##################################################################
+      #                    BACKEND ONLY: DOCKER BUILD                   #
+      ##################################################################
+      - name: Docker Build Backend
+        if: ${{ steps.get-type.outputs.type == 'backend' && github.event_name != 'pull_request' }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           APP_DIR: ${{ steps.setup.outputs.directory }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          echo "📝 DEBUG: APP_DIR='$APP_DIR'"
-          
           IMAGE_APP=$(basename "$APP_DIR")
-          echo "📝 DEBUG: IMAGE_APP='$IMAGE_APP'"
 
-          if [ -z "$APP_DIR" ]; then
-            echo "❌ ERROR: APP_DIR is empty. Composite action did not output directory."
-            exit 1
-          fi
+          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" \
+                       --password-stdin <<< "${{ secrets.DOCKERHUB_TOKEN }}"
 
-          # Build image
           docker build -t $DOCKERHUB_USERNAME/$IMAGE_APP:latest "$APP_DIR"
 
-          # Push latest
           docker push $DOCKERHUB_USERNAME/$IMAGE_APP:latest
 
-          # Tag & push SHA version
           docker tag $DOCKERHUB_USERNAME/$IMAGE_APP:latest \
                       $DOCKERHUB_USERNAME/$IMAGE_APP:$COMMIT_SHA
+
           docker push $DOCKERHUB_USERNAME/$IMAGE_APP:$COMMIT_SHA
