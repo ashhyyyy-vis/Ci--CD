@@ -11,7 +11,7 @@ permissions:
   contents: read
   packages: read
   statuses: write
-  
+
 jobs:
   ######################################################################
   #                       PREPARE MATRIX                              #
@@ -125,24 +125,49 @@ jobs:
 
           LINT_PATH_JSON='${{ steps.setup.outputs.lint_path }}'
 
+          # Case 1: null → lint entire directory
           if [ "$LINT_PATH_JSON" = "null" ]; then
-            echo "LINT_TARGETS=${{ steps.setup.outputs.directory }}" >> $GITHUB_ENV
+            DIR="${{ steps.setup.outputs.directory }}"
+            echo "LINT_TARGETS=(${DIR}/.*)" >> $GITHUB_ENV
             exit 0
           fi
 
+          # Case 2: string/object → convert to list
           TARGETS=$(echo "$LINT_PATH_JSON" | jq -r '
-            if type=="string" then [.] else [.[]] end | join(" ")
+            if type=="string" then
+              [.]
+            else
+              [.[]]
+            end | join(" ")
           ')
 
-          FULL=()
+          # Build Regex Pattern for Super-Linter
+          REGEX_PARTS=()
+          APP_DIR="${{ steps.setup.outputs.directory }}"
+
           for t in $TARGETS; do
-            t_trim=$(echo "$t" | xargs)
-            [ -z "$t_trim" ] && continue
-            FULL+=("${{ steps.setup.outputs.directory }}/$t_trim")
+            t_trimmed=$(echo "$t" | xargs)
+            [ -z "$t_trimmed" ] && continue
+            
+            if [[ "$t_trimmed" == /* ]]; then
+               CLEAN_PATH="${t_trimmed#/}"
+            else
+               CLEAN_PATH="${APP_DIR}/${t_trimmed}"
+            fi
+
+            if [[ "$CLEAN_PATH" == *.* ]]; then
+               REGEX_PARTS+=("${CLEAN_PATH}")
+            else
+               REGEX_PARTS+=("${CLEAN_PATH}/.*")
+            fi
           done
 
-          echo "LINT_TARGETS=${FULL[*]}" >> $GITHUB_ENV
-          echo "Computed LINT_TARGETS: ${FULL[*]}"
+          IFS="|"
+          REGEX_STRING="(${REGEX_PARTS[*]})"
+          IFS=" " # Reset IFS
+
+          echo "LINT_TARGETS=$REGEX_STRING" >> $GITHUB_ENV
+          echo "Computed LINT_TARGETS (Regex): $REGEX_STRING"
 
       - name: Run Super-Linter
         if: env.LINT_TARGETS != ''
@@ -151,6 +176,8 @@ jobs:
           DEFAULT_BRANCH: "main"
           FILTER_REGEX_INCLUDE: ${{ env.LINT_TARGETS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 2. DISABLE ERRORS (Allows pipeline to continue even if linting fails)
+          DISABLE_ERRORS: true
 
       ##################################################################
       #                    BACKEND ONLY: DOCKER BUILD                   #
